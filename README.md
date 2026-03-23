@@ -7,7 +7,10 @@ database (e.g. NCBI `core_nt`).
 
 ## Scripts
 
-### `make_subset_blastdb.R` — full pipeline wrapper
+Each script has an R version (`.R`) and a bash equivalent (`.sh`) with identical interfaces.
+Use the `.sh` versions on systems where R is not available.
+
+### `make_subset_blastdb.R` / `make_subset_blastdb.sh` — full pipeline wrapper
 
 Fetches matching accession numbers from NCBI and builds the subset database in one step.
 
@@ -28,7 +31,15 @@ Rscript make_subset_blastdb.R <blastdb> <taxon> <query> <title> [output_dir]
 **Example**
 
 ```bash
+# R version
 Rscript make_subset_blastdb.R \
+  /Volumes/Clupea/core_nt/core_nt \
+  Sebastes \
+  "(Sebastes[Organism]) AND (mitochondrion OR mitochondrial) AND 100:20000[Sequence Length]" \
+  "Sebastes mitochondrial DNA"
+
+# bash version (no R required)
+bash make_subset_blastdb.sh \
   /Volumes/Clupea/core_nt/core_nt \
   Sebastes \
   "(Sebastes[Organism]) AND (mitochondrion OR mitochondrial) AND 100:20000[Sequence Length]" \
@@ -41,14 +52,15 @@ Rscript make_subset_blastdb.R \
 2. Pages through results with `efetch -format acc` in chunks of 100,000, with a 1-second
    pause between chunks to respect NCBI rate limits.
 3. Saves the combined accession list to `<output_dir>/accessions/<taxon>_ncbi_acc.txt`.
-4. Calls `subset_blastdb_by_accession.R` to extract sequences from the local database
-   and build the standalone BLAST database.
+4. Calls `subset_blastdb_by_accession.R` (R version) or `subset_blastdb_by_accession.sh`
+   (bash version) to extract sequences from the local database and build the standalone
+   BLAST database.
 
 **Requirements:** see Dependencies below.
 
 ---
 
-### `subset_blastdb_by_accession.R` — database builder
+### `subset_blastdb_by_accession.R` / `subset_blastdb_by_accession.sh` — database builder
 
 Extracts sequences for a list of accession numbers from an existing local BLAST database
 and builds a new, self-contained database. Can be used independently of the wrapper.
@@ -94,10 +106,13 @@ Accessions not present in the local database are silently skipped by `blastdbcmd
 
 | Tool | Used by | Notes |
 |---|---|---|
-| **R** (≥ 4.0) | both scripts | base R only; no packages required |
-| **NCBI BLAST+** (`blastdbcmd`, `makeblastdb`) | `subset_blastdb_by_accession.R` | must be on `PATH`; tested with BLAST+ 2.14+ |
-| **NCBI edirect** (`esearch`, `efetch`) | `make_subset_blastdb.R` | expected at `~/edirect`; install with `sh <(curl -fsSL https://ftp.ncbi.nlm.nih.gov/entrez/entrezdirect/install-edirect.sh)` |
-| **NCBI taxonomy files** (`taxdb.btd`, `taxdb.bti`) | `subset_blastdb_by_accession.R` | must be present in the working directory or on `BLASTDB` path for taxid lookups to work |
+| Tool | Used by | Notes |
+|---|---|---|
+| **R** (≥ 4.0) | `.R` scripts only | base R only; no packages required — not needed if using `.sh` versions |
+| **bash** (≥ 4.0), **awk**, **grep** | `.sh` scripts | standard on macOS/Linux; macOS ships bash 3.2 — install bash 4+ via Homebrew if needed |
+| **NCBI BLAST+** (`blastdbcmd`, `makeblastdb`) | all scripts | must be on `PATH`; tested with BLAST+ 2.14+ |
+| **NCBI edirect** (`esearch`, `efetch`) | `make_subset_blastdb.*` | expected at `~/edirect`; install with `sh <(curl -fsSL https://ftp.ncbi.nlm.nih.gov/entrez/entrezdirect/install-edirect.sh)` |
+| **NCBI taxonomy files** (`taxdb.btd`, `taxdb.bti`) | `subset_blastdb_by_accession.*` | must be present in the working directory or on `BLASTDB` path for taxid lookups to work |
 
 **Note:** `BLAST Database error: Database memory map file error` (exit code 3) from
 `blastdbcmd` is a misleading message that most commonly means the database path is wrong
