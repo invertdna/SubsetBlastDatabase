@@ -99,6 +99,10 @@ Accessions not present in the local database are silently skipped by `blastdbcmd
 | **NCBI edirect** (`esearch`, `efetch`) | `make_subset_blastdb.R` | expected at `~/edirect`; install with `sh <(curl -fsSL https://ftp.ncbi.nlm.nih.gov/entrez/entrezdirect/install-edirect.sh)` |
 | **NCBI taxonomy files** (`taxdb.btd`, `taxdb.bti`) | `subset_blastdb_by_accession.R` | must be present in the working directory or on `BLASTDB` path for taxid lookups to work |
 
+**Note:** `BLAST Database error: Database memory map file error` (exit code 3) from
+`blastdbcmd` is a misleading message that most commonly means the database path is wrong
+or does not exist — check the path before suspecting a memory issue.
+
 ---
 
 ## Design notes
