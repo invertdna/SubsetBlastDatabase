@@ -10,7 +10,7 @@
 #
 # Arguments:
 #   path_to_blastdb : path (with db name prefix) to an existing local BLAST db
-#                     e.g. /Volumes/Clupea/blastdb/core_nt
+#                     e.g. /Volumes/Clupea/core_nt/core_nt
 #   path_to_acc_list: text file with one accession (or accession.version) per line
 #                     e.g. NC_001234.1  or  NC_001234
 #   output_dir      : (optional) directory for output files; default "subset_db"
