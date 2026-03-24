@@ -81,12 +81,16 @@ Rscript subset_blastdb_by_accession.R <blastdb> <acc_list> [output_dir] [title]
 **What it does**
 
 1. Validates the accession list (warns if any lines look like GI numbers).
-2. Extracts FASTA sequences from the local database with `blastdbcmd -entry_batch`.
-3. Extracts accession-to-taxid mappings with a second `blastdbcmd` call.
-4. Deduplicates the FASTA (multi-volume databases return the same sequence once per
-   volume; `makeblastdb` requires unique sequence IDs).
-5. Builds the new database with `makeblastdb -parse_seqids -taxid_map`.
-6. Removes the intermediate FASTA file.
+2. Detects the number of logical CPU cores and splits the accession list into that
+   many chunks.
+3. Extracts FASTA sequences from the local database in parallel: one `blastdbcmd
+   -entry_batch` job per chunk, all running simultaneously. Chunk files are merged
+   then removed.
+4. Extracts accession-to-taxid mappings in parallel the same way.
+5. Deduplicates the merged FASTA (multi-volume databases return the same sequence
+   once per volume; `makeblastdb` requires unique sequence IDs).
+6. Builds the new database with `makeblastdb -parse_seqids -taxid_map`.
+7. Removes the intermediate FASTA file.
 
 Accessions not present in the local database are silently skipped by `blastdbcmd`
 (this is expected when the local database snapshot is older than the NCBI query).

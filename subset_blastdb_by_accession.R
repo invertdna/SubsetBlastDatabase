@@ -15,6 +15,9 @@
 #                     e.g. NC_001234.1  or  NC_001234
 #   output_dir      : (optional) directory for output files; default "subset_db"
 #   title           : (optional) human-readable title for the database; default = output_dir name
+#
+# The accession list is split into N chunks and blastdbcmd is run in parallel,
+# where N = number of logical CPU cores. Uses base R parallel package (no extra deps).
 
 # ---- parse args ----
 args <- commandArgs(trailingOnly = TRUE)
@@ -50,43 +53,68 @@ if (any(gi_like)) {
 }
 message(sprintf("Input: %d accession(s) from %s", length(acc_lines), acc_file))
 
-# ---- 1. extract clean fasta: accession.version as sole header ----
-#   %a = accession.version, %t = title, %s = sequence
-#   -entry_batch accepts accession or accession.version strings directly.
-cmd_fasta <- paste0(
-  "blastdbcmd",
-  " -db ", shQuote(db_path),
-  " -entry_batch ", shQuote(acc_file),
-  ' -outfmt ">%a %t\n%s"',
-  " -out ", shQuote(fasta_file)
-)
-message("Extracting FASTA sequences...")
-message("  cmd: ", cmd_fasta)
-status <- system(cmd_fasta)
-# exit code 1 is normal when some accessions are absent from the local db (Skipped warnings);
-# treat as fatal only if the output file is missing or empty.
-if (status != 0) {
-  if (!file.exists(fasta_file) || file.size(fasta_file) == 0)
-    stop("blastdbcmd (fasta) produced no output (exit code ", status, ")")
-  message("  Note: blastdbcmd skipped some accessions not present in local db (exit code ", status, ")")
-}
+# ---- detect available cores ----
+n_cores <- max(1L, parallel::detectCores(logical = TRUE))
+message(sprintf("Parallel workers: %d", n_cores))
 
-# ---- 2. extract accession and taxid for same entries ----
-cmd_tax <- paste0(
-  "blastdbcmd",
-  " -db ", shQuote(db_path),
-  " -entry_batch ", shQuote(acc_file),
-  ' -outfmt "%a\t%T"',
-  " -out ", shQuote(taxid_file)
-)
-message("Extracting taxon IDs...")
-message("  cmd: ", cmd_tax)
-status <- system(cmd_tax)
-if (status != 0) {
-  if (!file.exists(taxid_file) || file.size(taxid_file) == 0)
-    stop("blastdbcmd (taxid) produced no output (exit code ", status, ")")
-  message("  Note: blastdbcmd skipped some accessions not present in local db (exit code ", status, ")")
-}
+# ---- split accession list into N chunks, write chunk files ----
+n_chunks   <- min(n_cores, length(acc_lines))
+chunk_size <- ceiling(length(acc_lines) / n_chunks)
+acc_chunk_list <- split(acc_lines, (seq_along(acc_lines) - 1L) %/% chunk_size)
+n_chunks   <- length(acc_chunk_list)  # recompute: may be < n_cores for tiny lists
+
+acc_chunk_files <- lapply(seq_len(n_chunks), function(i) {
+  f <- file.path(out_dir, sprintf(".%s_acc_chunk_%02d.txt", prefix, i))
+  writeLines(acc_chunk_list[[i]], f)
+  f
+})
+message(sprintf("Split %d accessions into %d chunk(s) of up to %d",
+                length(acc_lines), n_chunks, chunk_size))
+
+# ---- 1. extract FASTA in parallel ----
+message(sprintf("Extracting FASTA sequences (%d parallel job(s))...", n_chunks))
+fasta_chunk_files <- lapply(seq_len(n_chunks), function(i)
+  file.path(out_dir, sprintf(".%s_fasta_chunk_%02d.fasta", prefix, i)))
+# pre-create empty placeholders so cat succeeds even if blastdbcmd finds nothing
+invisible(lapply(fasta_chunk_files, file.create))
+invisible(parallel::mclapply(seq_len(n_chunks), function(i) {
+  cmd <- paste0(
+    "blastdbcmd",
+    " -db ", shQuote(db_path),
+    " -entry_batch ", shQuote(acc_chunk_files[[i]]),
+    ' -outfmt ">%a %t\n%s"',
+    " -out ", shQuote(fasta_chunk_files[[i]])
+  )
+  system(cmd)
+}, mc.cores = n_chunks))
+system(paste("cat", paste(shQuote(unlist(fasta_chunk_files)), collapse = " "),
+             ">", shQuote(fasta_file)))
+invisible(file.remove(unlist(fasta_chunk_files)))
+if (!file.exists(fasta_file) || file.size(fasta_file) == 0)
+  stop("blastdbcmd (fasta) produced no output")
+message("  FASTA chunks merged")
+
+# ---- 2. extract accession and taxid in parallel ----
+message(sprintf("Extracting taxon IDs (%d parallel job(s))...", n_chunks))
+taxid_chunk_files <- lapply(seq_len(n_chunks), function(i)
+  file.path(out_dir, sprintf(".%s_taxid_chunk_%02d.txt", prefix, i)))
+invisible(lapply(taxid_chunk_files, file.create))
+invisible(parallel::mclapply(seq_len(n_chunks), function(i) {
+  cmd <- paste0(
+    "blastdbcmd",
+    " -db ", shQuote(db_path),
+    " -entry_batch ", shQuote(acc_chunk_files[[i]]),
+    ' -outfmt "%a\t%T"',
+    " -out ", shQuote(taxid_chunk_files[[i]])
+  )
+  system(cmd)
+}, mc.cores = n_chunks))
+system(paste("cat", paste(shQuote(unlist(taxid_chunk_files)), collapse = " "),
+             ">", shQuote(taxid_file)))
+invisible(file.remove(c(unlist(taxid_chunk_files), unlist(acc_chunk_files))))
+if (!file.exists(taxid_file) || file.size(taxid_file) == 0)
+  stop("blastdbcmd (taxid) produced no output")
+message("  Taxid chunks merged")
 
 # ---- 3. build accession-to-taxid map, deduplicated ----
 tax <- read.delim(taxid_file, header = FALSE, colClasses = "character",

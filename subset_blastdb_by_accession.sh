@@ -12,6 +12,9 @@
 #   path_to_acc_list: text file with one accession (or accession.version) per line
 #   output_dir      : (optional) directory for output files; default "subset_db"
 #   title           : (optional) human-readable title for the database; default = output_dir name
+#
+# The accession list is split into N chunks and blastdbcmd is run in parallel,
+# where N = number of logical CPU cores. Chunk files are removed after merging.
 
 set -euo pipefail
 
@@ -45,37 +48,67 @@ if [[ "$gi_count" -gt 0 ]]; then
   echo "WARNING: ${gi_count} line(s) look like GI numbers (pure integers). Verify your accession list." >&2
 fi
 
-# ---- 1. extract FASTA --------------------------------------------------
-echo "Extracting FASTA sequences..."
-echo "  cmd: blastdbcmd -db '${db_path}' -entry_batch '${acc_file}' -outfmt '>%a %t\n%s' -out '${fasta_file}'"
-blastdbcmd \
-  -db "$db_path" \
-  -entry_batch "$acc_file" \
-  -outfmt $'>%a %t\n%s' \
-  -out "$fasta_file" || {
-    status=$?
-    if [[ ! -s "$fasta_file" ]]; then
-      echo "ERROR: blastdbcmd (fasta) produced no output (exit code ${status})" >&2
-      exit "$status"
-    fi
-    echo "  Note: blastdbcmd skipped some accessions not present in local db (exit code ${status})"
-  }
+# ---- detect available cores --------------------------------------------
+if command -v nproc &>/dev/null; then
+  n_cores=$(nproc)
+else
+  n_cores=$(sysctl -n hw.logicalcpu 2>/dev/null || echo 1)
+fi
+echo "Parallel workers: ${n_cores}"
 
-# ---- 2. extract taxids -------------------------------------------------
-echo "Extracting taxon IDs..."
-echo "  cmd: blastdbcmd -db '${db_path}' -entry_batch '${acc_file}' -outfmt '%a\t%T' -out '${taxid_file}'"
-blastdbcmd \
-  -db "$db_path" \
-  -entry_batch "$acc_file" \
-  -outfmt "%a	%T" \
-  -out "$taxid_file" || {
-    status=$?
-    if [[ ! -s "$taxid_file" ]]; then
-      echo "ERROR: blastdbcmd (taxid) produced no output (exit code ${status})" >&2
-      exit "$status"
-    fi
-    echo "  Note: blastdbcmd skipped some accessions not present in local db (exit code ${status})"
-  }
+# ---- split accession list into N chunks --------------------------------
+chunk_prefix="${out_dir}/.${prefix}_acc_chunk_"
+lines_per_chunk=$(( (n_accs + n_cores - 1) / n_cores ))
+[[ "$lines_per_chunk" -lt 1 ]] && lines_per_chunk=1
+split -l "$lines_per_chunk" -d "$acc_file" "$chunk_prefix"
+acc_chunks=( "${chunk_prefix}"* )
+n_chunks=${#acc_chunks[@]}
+echo "Split into ${n_chunks} chunk(s) of up to ${lines_per_chunk} accessions"
+
+# ---- 1. extract FASTA in parallel --------------------------------------
+echo "Extracting FASTA sequences (${n_chunks} parallel job(s))..."
+fasta_chunks=()
+for chunk in "${acc_chunks[@]}"; do
+  cf="${chunk}.fasta"
+  : > "$cf"   # ensure file exists even if blastdbcmd finds nothing
+  fasta_chunks+=("$cf")
+  ( blastdbcmd \
+      -db "$db_path" \
+      -entry_batch "$chunk" \
+      -outfmt $'>%a %t\n%s' \
+      -out "$cf" || true ) &
+done
+wait
+cat "${fasta_chunks[@]}" > "$fasta_file"
+rm "${fasta_chunks[@]}"
+if [[ ! -s "$fasta_file" ]]; then
+  echo "ERROR: blastdbcmd (fasta) produced no output" >&2
+  rm "${acc_chunks[@]}" 2>/dev/null || true
+  exit 1
+fi
+echo "  FASTA chunks merged"
+
+# ---- 2. extract taxids in parallel -------------------------------------
+echo "Extracting taxon IDs (${n_chunks} parallel job(s))..."
+taxid_chunks=()
+for chunk in "${acc_chunks[@]}"; do
+  ct="${chunk}.taxids"
+  : > "$ct"   # ensure file exists even if blastdbcmd finds nothing
+  taxid_chunks+=("$ct")
+  ( blastdbcmd \
+      -db "$db_path" \
+      -entry_batch "$chunk" \
+      -outfmt "%a	%T" \
+      -out "$ct" || true ) &
+done
+wait
+cat "${taxid_chunks[@]}" > "$taxid_file"
+rm "${taxid_chunks[@]}" "${acc_chunks[@]}"
+if [[ ! -s "$taxid_file" ]]; then
+  echo "ERROR: blastdbcmd (taxid) produced no output" >&2
+  exit 1
+fi
+echo "  Taxid chunks merged"
 
 # ---- 3. build deduplicated taxid map -----------------------------------
 # Keep first occurrence per accession; drop taxid == 0 or empty
