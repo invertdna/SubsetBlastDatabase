@@ -145,13 +145,29 @@ makeblastdb \
   -out "$new_db_name" \
   -title "$db_title"
 
-# ---- 6. clean up -------------------------------------------------------
+# ---- 6. write readme ---------------------------------------------------
+n_taxids=$(awk '{print $2}' "$taxid_map" | sort -u | wc -l | tr -d ' ')
+readme_file="${out_dir}/readme.txt"
+cat > "$readme_file" <<EOF
+SubsetBlastDatabase
+===================
+Script:            $(basename "$0")
+Source database:   ${db_path}
+Created by:        $(whoami)
+Created:           $(date)
+Unique accessions: ${n_after}
+Unique taxon IDs:  ${n_taxids}
+EOF
+echo "readme.txt written: ${readme_file}"
+
+# ---- 7. clean up -------------------------------------------------------
 rm "$fasta_file"
 echo "Removed intermediate FASTA: ${fasta_file}"
 
 echo ""
 echo "Done. New database: ${new_db_name}"
 echo "Files created:"
+echo "  readme.txt: ${readme_file}"
 echo "  Taxid list: ${taxid_file}"
 echo "  Taxid map:  ${taxid_map}"
 echo "  BLAST db:   ${new_db_name}.*"

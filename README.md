@@ -100,10 +100,22 @@ Accessions not present in the local database are silently skipped by `blastdbcmd
 
 ```
 <output_dir>/
+  readme.txt               provenance record (see below)
   <taxon>_taxids.txt       raw accession-taxid pairs from blastdbcmd
   <taxon>_taxid_map.txt    deduplicated map used by makeblastdb
   <taxon>.{nhr,nin,...}    BLAST database files
 ```
+
+**readme.txt** is written automatically to every output directory and records:
+
+| Field | Content |
+|---|---|
+| `Script` | Name of the script that created the database |
+| `Source database` | Full path of the parent BLAST database |
+| `Created by` | Username of the person who ran the script |
+| `Created` | Date and time of database creation |
+| `Unique accessions` | Number of sequences in the final database |
+| `Unique taxon IDs` | Number of distinct NCBI taxon IDs represented |
 
 ---
 
@@ -150,6 +162,7 @@ correctly returns nothing.
 Balaenoptera/
   accessions/
     Balaenoptera_ncbi_acc.txt         accession list fetched from NCBI
+  readme.txt                          provenance record
   Balaenoptera_taxids.txt             raw accession-taxid pairs
   Balaenoptera_taxid_map.txt          deduplicated map used by makeblastdb
   Balaenoptera.{ndb,nhr,nin,…}        BLAST database files

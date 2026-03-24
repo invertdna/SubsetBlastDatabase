@@ -124,6 +124,7 @@ tax <- tax[!duplicated(tax$acc), ]
 write.table(tax, taxid_map, sep = "\t", row.names = FALSE,
             col.names = FALSE, quote = FALSE)
 message(sprintf("Taxid map written: %d entries", nrow(tax)))
+n_taxids <- length(unique(tax$taxid))
 
 # ---- 4. deduplicate fasta ----
 #   Multiple input accessions may expand to the same sequence; makeblastdb
@@ -136,6 +137,7 @@ keep   <- !duplicated(ids)
 keep_idx  <- which(is_hdr)[keep]
 keep_mask <- grp %in% grp[keep_idx]
 writeLines(lines[keep_mask], fasta_file)
+n_seqs  <- sum(keep)
 n_dedup <- sum(!keep)
 if (n_dedup > 0) message(sprintf("Removed %d duplicate accession(s) from FASTA", n_dedup))
 
@@ -154,12 +156,31 @@ message("  cmd: ", cmd_make)
 status <- system(cmd_make)
 if (status != 0) stop("makeblastdb failed with exit code ", status)
 
-# ---- 6. clean up intermediate files ----
+# ---- 6. write readme ----
+script_name <- tryCatch(
+  basename(sub("--file=", "", grep("--file=", commandArgs(FALSE), value = TRUE)[1])),
+  error = function(e) "subset_blastdb_by_accession.R"
+)
+readme_file <- file.path(out_dir, "readme.txt")
+writeLines(c(
+  "SubsetBlastDatabase",
+  "===================",
+  sprintf("Script:            %s", script_name),
+  sprintf("Source database:   %s", db_path),
+  sprintf("Created by:        %s", Sys.getenv("USER")),
+  sprintf("Created:           %s", format(Sys.time(), "%Y-%m-%d %H:%M:%S %Z")),
+  sprintf("Unique accessions: %d", n_seqs),
+  sprintf("Unique taxon IDs:  %d", n_taxids)
+), readme_file)
+message("readme.txt written: ", readme_file)
+
+# ---- 7. clean up intermediate files ----
 invisible(file.remove(fasta_file))
 message("Removed intermediate FASTA: ", fasta_file)
 
 message("\nDone. New database: ", new_db_name)
 message("Files created:")
+message("  readme.txt: ", readme_file)
 message("  Taxid list: ", taxid_file)
 message("  Taxid map:  ", taxid_map)
 message("  BLAST db:   ", new_db_name, ".*")
