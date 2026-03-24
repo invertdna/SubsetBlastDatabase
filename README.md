@@ -7,8 +7,9 @@ database (e.g. NCBI `core_nt`).
 
 ## Scripts
 
-Each script has an R version (`.R`) and a bash equivalent (`.sh`) with identical interfaces.
-Use the `.sh` versions on systems where R is not available.
+The main pipeline scripts each have an R version (`.R`) and a bash equivalent (`.sh`)
+with identical interfaces. Use the `.sh` versions on systems where R is not available.
+`demo_balaenoptera.R` is a standalone worked example.
 
 ### `make_subset_blastdb.R` / `make_subset_blastdb.sh` — full pipeline wrapper
 
@@ -106,12 +107,59 @@ Accessions not present in the local database are silently skipped by `blastdbcmd
 
 ---
 
+### `demo_balaenoptera.R` — worked example
+
+A self-contained script that exercises the full pipeline and a downstream BLAST search.
+Run it as-is to verify the toolchain is working, or use it as a template for new taxa.
+
+**Usage**
+
+```bash
+Rscript demo_balaenoptera.R
+```
+
+No arguments. Paths are resolved relative to the script's own directory.
+
+**What it does**
+
+1. Calls `make_subset_blastdb.R` to fetch all *Balaenoptera* mitochondrial sequences
+   from NCBI nuccore (7,527 accessions at time of writing) and build a standalone
+   subset of `core_nt`.
+2. Runs `blastn` against the new database using `testquery.fasta` as the query,
+   requiring 100 % identity and returning at most 5 hits per query sequence.
+3. Reads the tabular results into R and prints them to the console.
+
+**Expected output**
+
+`testquery.fasta` contains three sequences: one *Stenella longirostris* (dolphin) and
+two *Balaenoptera* (baleen whales). At 100 % identity against a *Balaenoptera*-only
+database, only the two *Balaenoptera* queries return hits; the *Stenella* query
+correctly returns nothing.
+
+```
+      qseqid         sseqid pident length … evalue bitscore
+1 MZ463940.1 gb|MZ463940.1|    100    719 …      0     1328
+2 MZ463941.1 gb|EU030282.1|    100    677 …      0     1251
+3 MZ463941.1 gb|KF916567.1|    100    677 …      0     1251
+4 MZ463941.1 gb|MZ463941.1|    100    677 …      0     1251
+```
+
+**Output files**
+
+```
+Balaenoptera/
+  accessions/
+    Balaenoptera_ncbi_acc.txt         accession list fetched from NCBI
+  Balaenoptera_taxids.txt             raw accession-taxid pairs
+  Balaenoptera_taxid_map.txt          deduplicated map used by makeblastdb
+  Balaenoptera.{ndb,nhr,nin,…}        BLAST database files
+  testquery_blast_results.txt         tabular blastn output (outfmt 6)
+```
+
+---
+
 ## Dependencies
 
-| Tool | Used by | Notes |
-|---|---|---|
-| Tool | Used by | Notes |
-|---|---|---|
 | **R** (≥ 4.0) | `.R` scripts only | base R only; no packages required — not needed if using `.sh` versions |
 | **bash** (≥ 4.0), **awk**, **grep** | `.sh` scripts | standard on macOS/Linux; macOS ships bash 3.2 — install bash 4+ via Homebrew if needed |
 | **NCBI BLAST+** (`blastdbcmd`, `makeblastdb`) | all scripts | must be on `PATH`; tested with BLAST+ 2.14+ |
