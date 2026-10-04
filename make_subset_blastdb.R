@@ -37,8 +37,28 @@ title   <- args[4]
 out_dir <- if (length(args) >= 5) args[5] else taxon
 
 # ---- locate subset_blastdb_by_accession.R next to this script ---------
-script_path  <- sub("--file=", "", grep("--file=", commandArgs(FALSE), value = TRUE))
-script_dir   <- if (length(script_path) > 0) dirname(normalizePath(script_path)) else "."
+# ---- locate this script (robust to spaces/special characters in paths) ----
+# Rscript encodes spaces in the --file= argument as "~+~", so decode before use.
+# Falls back to source()'s ofile, then the RStudio editor path, when not run via Rscript.
+this_script_path <- function() {
+  f <- grep("^--file=", commandArgs(FALSE), value = TRUE)
+  if (length(f) > 0) {
+    p <- gsub("~+~", " ", sub("^--file=", "", f[1]), fixed = TRUE)
+    return(normalizePath(p, mustWork = TRUE))
+  }
+  for (i in rev(seq_len(sys.nframe()))) {
+    of <- sys.frame(i)$ofile
+    if (!is.null(of)) return(normalizePath(of, mustWork = TRUE))
+  }
+  if (requireNamespace("rstudioapi", quietly = TRUE) && rstudioapi::isAvailable()) {
+    p <- rstudioapi::getSourceEditorContext()$path
+    if (nzchar(p)) return(normalizePath(p, mustWork = TRUE))
+  }
+  NA_character_
+}
+
+script_path  <- this_script_path()
+script_dir   <- if (!is.na(script_path)) dirname(script_path) else getwd()
 subset_script <- file.path(script_dir, "subset_blastdb_by_accession.R")
 if (!file.exists(subset_script)) {
   stop("Cannot find subset_blastdb_by_accession.R in: ", script_dir)
@@ -67,6 +87,7 @@ run(
   paste0("esearch -db nuccore -query ", shQuote(query), " > ", shQuote(search_xml)),
   "esearch"
 )
+search_date <- format(Sys.time(), "%Y-%m-%d %H:%M %Z")
 
 xml_lines <- readLines(search_xml)
 count_line <- grep("<Count>", xml_lines, value = TRUE)
@@ -124,6 +145,15 @@ message(sprintf("  Accession list: %d entries -> %s", length(all_accs), acc_file
 # STEP 3 — build the subset BLAST database
 # =======================================================================
 message("\n--- Step 3: Building subset BLAST database ---")
+# pass the search details and this wrapper's path to the subset script for its readme
+wrapper_path <- if (!is.na(script_path)) script_path else ""
+Sys.setenv(
+  SUBSET_SEARCH_QUERY   = query,
+  SUBSET_SEARCH_DATE    = search_date,
+  SUBSET_SEARCH_COUNT   = as.character(total),
+  SUBSET_CALLER_SCRIPT  = wrapper_path,
+  SUBSET_CALLER_COMMAND = paste(c("Rscript", shQuote(wrapper_path), shQuote(args)), collapse = " ")
+)
 run(
   paste(
     "Rscript", shQuote(subset_script),
@@ -137,4 +167,5 @@ run(
 
 message("\n=== Done ===")
 message("  Accession list: ", acc_file)
-message("  Database:       ", file.path(out_dir, "subset_db"), ".*")
+message("  readme.txt:     ", file.path(out_dir, "readme.txt"))
+message("  Database:       ", file.path(out_dir, gsub("[^A-Za-z0-9._-]", "_", basename(out_dir))), ".*")

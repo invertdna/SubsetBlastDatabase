@@ -16,6 +16,10 @@
 
 set -euo pipefail
 
+# record the exact top-level command for provenance (saved in <output_dir>/code/)
+wrapper_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+wrapper_cmd="$(printf '%q ' bash "$wrapper_path" "$@")"
+
 CHUNK_SIZE=100000
 
 # ---- parse args --------------------------------------------------------
@@ -60,6 +64,7 @@ trap 'rm -f "$search_xml"' EXIT
 
 echo "  cmd: esearch -db nuccore -query '${query}'"
 esearch -db nuccore -query "$query" > "$search_xml"
+search_date="$(date '+%Y-%m-%d %H:%M %Z')"
 
 total=$(grep -o '<Count>[0-9]*</Count>' "$search_xml" | head -1 | grep -o '[0-9]*' || true)
 if [[ -z "$total" || "$total" -eq 0 ]]; then
@@ -121,9 +126,15 @@ echo "  Accession list: ${n_total} entries -> ${acc_file}"
 echo ""
 echo "--- Step 3: Building subset BLAST database ---"
 echo "  cmd: bash '${subset_script}' '${db_path}' '${acc_file}' '${out_dir}' '${title}'"
-bash "$subset_script" "$db_path" "$acc_file" "$out_dir" "$title"
+SUBSET_SEARCH_QUERY="$query" \
+SUBSET_SEARCH_DATE="$search_date" \
+SUBSET_SEARCH_COUNT="$total" \
+SUBSET_CALLER_SCRIPT="$wrapper_path" \
+SUBSET_CALLER_COMMAND="$wrapper_cmd" \
+  bash "$subset_script" "$db_path" "$acc_file" "$out_dir" "$title"
 
 echo ""
 echo "=== Done ==="
 echo "  Accession list: ${acc_file}"
-echo "  Database:       ${out_dir}/$(basename "$out_dir").*"
+echo "  readme.txt:     ${out_dir}/readme.txt"
+echo "  Database:       ${out_dir}/$(printf '%s' "$(basename "$out_dir")" | tr -c 'A-Za-z0-9._-' '_').*"

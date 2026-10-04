@@ -53,7 +53,7 @@ bash make_subset_blastdb.sh \
 2. Pages through results with `efetch -format acc` in chunks of 100,000, with a 1-second
    pause between chunks to respect NCBI rate limits.
 3. Saves the combined accession list to `<output_dir>/accessions/<taxon>_ncbi_acc.txt`.
-4. Calls `subset_blastdb_by_accession.R` (R version) or `subset_blastdb_by_accession.sh`
+4. Records the search query, date and record count, and calls `subset_blastdb_by_accession.R` (R version) or `subset_blastdb_by_accession.sh`
    (bash version) to extract sequences from the local database and build the standalone
    BLAST database.
 
@@ -91,7 +91,9 @@ Rscript subset_blastdb_by_accession.R <blastdb> <acc_list> [output_dir] [title]
 5. Deduplicates the merged FASTA (multi-volume databases return the same sequence
    once per volume; `makeblastdb` requires unique sequence IDs).
 6. Builds the new database with `makeblastdb -parse_seqids -taxid_map`.
-7. Removes the intermediate FASTA file.
+7. Saves a copy of the script, the exact command, and the input accession list to
+   `code/`, and writes `readme.txt`.
+8. Removes the intermediate FASTA file.
 
 Accessions not present in the local database are silently skipped by `blastdbcmd`
 (this is expected when the local database snapshot is older than the NCBI query).
@@ -100,22 +102,39 @@ Accessions not present in the local database are silently skipped by `blastdbcmd
 
 ```
 <output_dir>/
-  readme.txt               provenance record (see below)
+  readme.txt               short description of contents, dates, and provenance
+  accessions/              accession list (when built via make_subset_blastdb.*)
+  code/
+    subset_blastdb_by_accession.{R,sh}   exact copy of the script that built the db
+    make_subset_blastdb.{R,sh}           copy of the wrapper, if it was used
+    command.txt            exact command(s) run, plus when/where/who and BLAST+ version
+    input_accessions.txt   copy of the accession list, only if it lived outside <output_dir>
   <taxon>_taxids.txt       raw accession-taxid pairs from blastdbcmd
   <taxon>_taxid_map.txt    deduplicated map used by makeblastdb
   <taxon>.{nhr,nin,...}    BLAST database files
 ```
 
-**readme.txt** is written automatically to every output directory and records:
+**readme.txt** is written automatically to every output directory. Example (built via
+the wrapper; the `Search:` lines appear only when `make_subset_blastdb.*` was used):
 
-| Field | Content |
-|---|---|
-| `Script` | Name of the script that created the database |
-| `Source database` | Full path of the parent BLAST database |
-| `Created by` | Username of the person who ran the script |
-| `Created` | Date and time of database creation |
-| `Unique accessions` | Number of sequences in the final database |
-| `Unique taxon IDs` | Number of distinct NCBI taxon IDs represented |
+```
+Sebastes mitochondrial DNA
+Standalone nucleotide BLAST database (Sebastes.*), built 2026-09-30 by rpk.
+Contents: 1234 unique accessions, 110 unique NCBI taxon IDs,
+  from the accession list accessions/Sebastes_ncbi_acc.txt.
+Search: NCBI nuccore, run 2026-09-30 13:13 PDT, 1301 records matched:
+  (Sebastes[Organism]) AND (mitochondrion OR mitochondrial) AND 100:20000[Sequence Length]
+Source: /Volumes/Clupea/core_nt/core_nt (source db dated Mar 4, 2026  9:12 PM).
+Code: code/make_subset_blastdb.R (calls code/subset_blastdb_by_accession.R); exact command(s) in code/command.txt.
+```
+
+The wrappers hand the search details to the subset script through the environment
+variables `SUBSET_SEARCH_QUERY`, `SUBSET_SEARCH_DATE`, `SUBSET_SEARCH_COUNT`,
+`SUBSET_CALLER_SCRIPT` and `SUBSET_CALLER_COMMAND`. You can set these yourself when
+calling `subset_blastdb_by_accession.*` directly with a list from some other search.
+
+The source-db date is read from `blastdbcmd -info`, so it reflects the snapshot of
+`core_nt` the subset was drawn from (not just the date the subset was built).
 
 ---
 
@@ -130,16 +149,20 @@ Run it as-is to verify the toolchain is working, or use it as a template for new
 Rscript demo_balaenoptera.R
 ```
 
-No arguments. Paths are resolved relative to the script's own directory.
+No arguments; it can also be run with `source()` from RStudio. Paths are resolved
+relative to the script's own folder, and paths with spaces (as on OneDrive) are fine.
+Edit `blastdb` at the top of the script to point at your local `core_nt`.
 
 **What it does**
 
 1. Calls `make_subset_blastdb.R` to fetch all *Balaenoptera* mitochondrial sequences
    from NCBI nuccore (7,527 accessions at time of writing) and build a standalone
-   subset of `core_nt`.
-2. Runs `blastn` against the new database using `testquery.fasta` as the query,
+   subset of `core_nt`, with its provenance record (`readme.txt`, `code/`).
+2. Prints the new database's `readme.txt` and lists what was saved in `code/`.
+3. Runs `blastn` against the new database using `testquery.fasta` as the query,
    requiring 100 % identity and returning at most 5 hits per query sequence.
-3. Reads the tabular results into R and prints them to the console.
+4. Reads the tabular results into R and prints them to the console (or reports
+   "No hits" if there are none).
 
 **Expected output**
 
@@ -162,7 +185,11 @@ correctly returns nothing.
 Balaenoptera/
   accessions/
     Balaenoptera_ncbi_acc.txt         accession list fetched from NCBI
-  readme.txt                          provenance record
+  readme.txt                          contents, search query, dates, provenance
+  code/
+    make_subset_blastdb.R             copy of the wrapper that was run
+    subset_blastdb_by_accession.R     copy of the database builder
+    command.txt                       exact commands, who/when/where, BLAST+ and R versions
   Balaenoptera_taxids.txt             raw accession-taxid pairs
   Balaenoptera_taxid_map.txt          deduplicated map used by makeblastdb
   Balaenoptera.{ndb,nhr,nin,…}        BLAST database files
@@ -173,11 +200,19 @@ Balaenoptera/
 
 ## Dependencies
 
+| Tool | Needed by | Notes |
+|---|---|---|
 | **R** (≥ 4.0) | `.R` scripts only | base R only; no packages required — not needed if using `.sh` versions |
 | **bash** (≥ 4.0), **awk**, **grep** | `.sh` scripts | standard on macOS/Linux; macOS ships bash 3.2 — install bash 4+ via Homebrew if needed |
 | **NCBI BLAST+** (`blastdbcmd`, `makeblastdb`) | all scripts | must be on `PATH`; tested with BLAST+ 2.14+ |
 | **NCBI edirect** (`esearch`, `efetch`) | `make_subset_blastdb.*` | expected at `~/edirect`; install with `sh <(curl -fsSL https://ftp.ncbi.nlm.nih.gov/entrez/entrezdirect/install-edirect.sh)` |
-| **NCBI taxonomy files** (`taxdb.btd`, `taxdb.bti`) | `subset_blastdb_by_accession.*` | must be present in the working directory or on `BLASTDB` path for taxid lookups to work |
+| **NCBI taxonomy files** (`taxdb.btd`, `taxdb.bti`) | `subset_blastdb_by_accession.*` | must be in the source database's folder or on the `BLASTDB` path (the scripts run `blastdbcmd` from inside the source database's folder, so taxdb files kept next to `core_nt` are found automatically) |
+
+**PATH under RStudio:** RStudio (its Terminal and R's `system()` calls) does not inherit
+the `PATH` from the macOS Terminal app, so `blastdbcmd`, `esearch`, etc. may be "not found".
+Every script therefore loads `~/.bashrc` first and uses the `PATH` it sets. Put the lines
+that add BLAST+ and edirect to your `PATH` in `~/.bashrc`, not inside an "interactive only"
+block, and not only in `~/.zshrc` or `~/.bash_profile`.
 
 **Note:** `BLAST Database error: Database memory map file error` (exit code 3) from
 `blastdbcmd` is a misleading message that most commonly means the database path is wrong
@@ -192,4 +227,11 @@ or does not exist — check the path before suspecting a memory issue.
   self-contained databases that can be copied anywhere.
 - **Accessions, not GI numbers.** NCBI no longer assigns GI numbers to new records.
   Accession.version strings are the stable, long-term identifier.
+- **Paths with spaces.** BLAST+ splits database names on spaces, which breaks on
+  OneDrive paths like `Kelly_Lab - Documents/2. KellyLab`. The scripts therefore run
+  every BLAST+ command from inside the database's folder with a bare database name.
+  Output database files are named after the output folder, with spaces and other
+  special characters replaced by `_` (e.g. `Sebastes rockfish/` gives `Sebastes_rockfish.*`).
+  When searching a subset database yourself from such a path, do the same:
+  `cd "<db folder>" && blastn -db <name> ...`.
 - **Nucleotide only.** Both scripts are hardcoded for `-dbtype nucl`.
