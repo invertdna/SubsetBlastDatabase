@@ -27,10 +27,12 @@
 # RStudio's Terminal does not inherit the PATH set up for the macOS Terminal app,
 # so BLAST+ and edirect may not be found. Load ~/.bashrc before anything else
 # (and before strict mode below, since rc files often use unset variables).
+bashrc_loaded=0
 if [[ -f "$HOME/.bashrc" ]]; then
   _start_dir="$PWD"
   source "$HOME/.bashrc" >/dev/null 2>&1 || true
   cd "$_start_dir"
+  bashrc_loaded=1
 fi
 
 set -euo pipefail
@@ -59,6 +61,10 @@ out_abs="$(cd "$out_dir" && pwd -P)"   # absolute path; used for all intermediat
 # database path under e.g. "Kelly_Lab - Documents/2. KellyLab" breaks blastdbcmd
 # and makeblastdb. Workaround: run each BLAST command from inside the database's
 # own folder and refer to the database by its bare (space-free) name.
+if [[ ! -d "$(dirname "$db_path")" ]]; then
+  echo "ERROR: Source database folder not found: $(dirname "$db_path") (is the drive mounted?)" >&2
+  exit 1
+fi
 db_dir="$(cd "$(dirname "$db_path")" && pwd -P)"
 db_name="$(basename "$db_path")"
 if [[ "$db_name" =~ [[:space:]] ]]; then
@@ -85,15 +91,38 @@ if [[ "$gi_count" -gt 0 ]]; then
   echo "WARNING: ${gi_count} line(s) look like GI numbers (pure integers). Verify your accession list." >&2
 fi
 
+# Explain why a BLAST database could not be opened (shown with the error)
+db_diagnostics() {   # $1 = db folder, $2 = db name
+  local d="$1" n="$2" listing idx
+  echo "  Diagnostics:"
+  echo "    blastdbcmd used : $(command -v blastdbcmd || echo 'NOT FOUND') ($(blastdbcmd -version 2>&1 | head -1))"
+  if ! listing=$(ls "$d" 2>&1); then
+    echo "    cannot list ${d}: $(printf '%s\n' "$listing" | head -1)"
+    echo "    If that says 'Operation not permitted', macOS is blocking this app from the drive:"
+    echo "    allow RStudio (and/or Terminal) under System Settings > Privacy & Security >"
+    echo "    Files and Folders (Removable Volumes), or Full Disk Access, then restart it."
+  else
+    idx=$(printf '%s\n' "$listing" | grep -E "^${n//./\\.}(\.[0-9]+)?\.(nal|nin|ndb)$" | head -4 | tr '\n' ' ' || true)
+    if [[ -n "$idx" ]]; then
+      echo "    '${n}' index files in ${d}: ${idx}"
+      echo "    The files are there, so the BLAST+ version above may be too old for this database."
+    else
+      echo "    '${n}' index files in ${d}: NONE"
+      echo "    The folder holds $(printf '%s\n' "$listing" | grep -c .) items, e.g.: $(printf '%s\n' "$listing" | head -4 | tr '\n' ' ')"
+      echo "    Check the database name in the path."
+    fi
+  fi
+}
+
 # ---- check the source database can be opened before doing any work ----
 if ! db_info=$(cd "$db_dir" && blastdbcmd -db "$db_name" -info 2>&1); then
   rmdir "$out_dir" 2>/dev/null || true   # remove output dir only if we just made it empty
   {
     echo "ERROR: Cannot open the source BLAST database: ${db_path}"
     echo "  blastdbcmd said: $(printf '%s\n' "$db_info" | head -3)"
-    echo "  Common causes: the drive holding the database is reached over a network share"
-    echo "  (SMB/NFS -- BLAST's LMDB index needs a locally attached disk), the download of the"
-    echo "  database is incomplete, or the path is wrong."
+    db_diagnostics "$db_dir" "$db_name"
+    echo "  (An LMDB / mdb_env_open error usually means the drive is network-mounted or the"
+    echo "   database download is incomplete.)"
   } >&2
   exit 1
 fi
@@ -127,11 +156,23 @@ for chunk in "${acc_chunks[@]}"; do
       -db "$db_name" \
       -entry_batch "$chunk" \
       -outfmt $'>%a %t\n%s' \
-      -out "$cf" || true ) &
+      -out "$cf" 2> "${cf}.err" || true ) &
 done
 wait
 cat "${fasta_chunks[@]}" > "$fasta_file"
-rm "${fasta_chunks[@]}"
+# blastdbcmd reports each accession missing from the source db as "Skipped <acc>";
+# collect those in a file instead of printing thousands of lines
+not_found_file="${out_abs}/${prefix}_not_in_source_db.txt"
+cat "${fasta_chunks[@]/%/.err}" | sed -n 's/.*Skipped[[:space:]]*//p' > "$not_found_file"
+n_not_found=$(grep -c . "$not_found_file" || true)
+other_errs=$(cat "${fasta_chunks[@]/%/.err}" | grep -v 'Skipped' | grep -v 'Entry or entries not found' | grep . | head -5 || true)
+[[ -n "$other_errs" ]] && printf '  blastdbcmd messages:\n%s\n' "$other_errs" >&2
+rm -f "${fasta_chunks[@]}" "${fasta_chunks[@]/%/.err}"
+if [[ "$n_not_found" -gt 0 ]]; then
+  echo "  ${n_not_found} accession(s) not in the source database (listed in $(basename "$not_found_file"))"
+else
+  rm -f "$not_found_file"
+fi
 if [[ ! -s "$fasta_file" ]]; then
   echo "ERROR: blastdbcmd (fasta) produced no output: none of the accessions were found in ${db_path}" >&2
   rm -f "${acc_chunks[@]}" "$fasta_file"
@@ -150,7 +191,7 @@ for chunk in "${acc_chunks[@]}"; do
       -db "$db_name" \
       -entry_batch "$chunk" \
       -outfmt "%a	%T" \
-      -out "$ct" || true ) &
+      -out "$ct" 2>/dev/null || true ) &
 done
 wait
 cat "${taxid_chunks[@]}" > "$taxid_file"
@@ -244,6 +285,9 @@ readme_file="${out_dir}/readme.txt"
   echo "Standalone nucleotide BLAST database (${prefix}.*), built $(date '+%Y-%m-%d') by $(whoami)."
   echo "Contents: ${n_after} unique accessions, ${n_taxids} unique NCBI taxon IDs,"
   echo "  from the accession list ${acc_rel}."
+  if [[ "$n_not_found" -gt 0 ]]; then
+    echo "  ${n_not_found} listed accessions were not in the source database: $(basename "$not_found_file")."
+  fi
   if [[ -n "${SUBSET_SEARCH_QUERY:-}" ]]; then
     echo "Search: NCBI nuccore, run ${SUBSET_SEARCH_DATE:-unknown date}, ${SUBSET_SEARCH_COUNT:-?} records matched:"
     echo "  ${SUBSET_SEARCH_QUERY}"

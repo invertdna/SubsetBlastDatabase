@@ -14,14 +14,23 @@
 # paths with spaces (e.g. "Kelly_Lab - Documents/2. KellyLab"). Edit `blastdb` below
 # to point at your local copy of core_nt.
 
-# ---- load the user's shell PATH from ~/.bashrc ----
-# RStudio (including its Terminal and R's system() calls) does not inherit the PATH
-# set up for the macOS Terminal app, so BLAST+ and edirect may not be found. Source
-# ~/.bashrc in bash and use the resulting PATH for every command this script runs.
+# ---- load the user's shell settings from ~/.bashrc ----
+# RStudio (including its Terminal and R's system() calls) does not inherit the settings
+# made for the macOS Terminal app, so BLAST+ may not be found and NCBI settings are
+# missing. Source ~/.bashrc in bash and adopt its PATH, BLASTDB and NCBI_* variables
+# for everything this script runs (variables already set in R are kept).
+bashrc_loaded <- FALSE
 if (file.exists(path.expand("~/.bashrc"))) {
-  bashrc_path <- suppressWarnings(system(
-    "bash -c 'source ~/.bashrc >/dev/null 2>&1; printf %s \"$PATH\"'", intern = TRUE))
-  if (length(bashrc_path) == 1 && nzchar(bashrc_path)) Sys.setenv(PATH = bashrc_path)
+  bashrc_vars <- c("PATH", "BLASTDB", "NCBI_EMAIL", "NCBI_API_KEY",
+                   "NCBI_CHUNK_SIZE", "NCBI_MAX_TRIES", "NCBI_RETRY_WAIT")
+  bashrc_env <- suppressWarnings(system(paste0(
+    "bash -c 'source ~/.bashrc >/dev/null 2>&1; for v in ", paste(bashrc_vars, collapse = " "),
+    "; do printf \"%s=%s\\n\" \"$v\" \"${!v}\"; done'"), intern = TRUE))
+  for (kv in bashrc_env) {
+    k <- sub("=.*", "", kv); v <- sub("^[^=]*=", "", kv)
+    if (nzchar(v) && (k == "PATH" || !nzchar(Sys.getenv(k)))) do.call(Sys.setenv, setNames(list(v), k))
+  }
+  bashrc_loaded <- length(bashrc_env) > 0
 }
 
 # ---- locate this script (robust to spaces/special characters in paths) ----

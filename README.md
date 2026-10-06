@@ -5,6 +5,21 @@ database (e.g. NCBI `core_nt`).
 
 ---
 
+## First-time setup
+
+Put these lines in `~/.bashrc`, using your own email, key and BLAST+ location:
+
+```bash
+export PATH="/usr/local/ncbi/blast/bin:$PATH"   # wherever BLAST+ is installed
+export NCBI_EMAIL="you@uw.edu"                  # NCBI asks users to identify themselves
+export NCBI_API_KEY="your_key"                  # free: NCBI account > Account settings > API Key Management
+```
+
+Every script loads `~/.bashrc` automatically, because RStudio doesn't inherit your Terminal's
+settings. Each run of `make_subset_blastdb.*` starts with a short **setup check** showing
+whether `~/.bashrc` was loaded and whether the email, API key and BLAST+ were found. For
+anything missing, it prints the line to add.
+
 ## Scripts
 
 The main pipeline scripts each have an R version (`.R`) and a bash equivalent (`.sh`)
@@ -25,7 +40,7 @@ Rscript make_subset_blastdb.R <blastdb> <taxon> <query> <title> [output_dir]
 |---|---|
 | `blastdb` | Path (with db prefix) to an existing local BLAST database |
 | `taxon` | Short name used for output file naming — no spaces (e.g. `Sebastes`) |
-| `query` | NCBI `esearch` query string |
+| `query` | NCBI Entrez search query string (same syntax as the nuccore search box) |
 | `title` | Human-readable title embedded in the output database metadata |
 | `output_dir` | (optional) Output directory; defaults to the `taxon` value |
 
@@ -49,13 +64,41 @@ bash make_subset_blastdb.sh \
 
 **What it does**
 
-1. Runs `esearch` once against NCBI nuccore and saves the search history (WebEnv/query_key).
-2. Pages through results with `efetch -format acc` in chunks of 100,000, with a 1-second
-   pause between chunks to respect NCBI rate limits.
-3. Saves the combined accession list to `<output_dir>/accessions/<taxon>_ncbi_acc.txt`.
-4. Records the search query, date and record count, and calls `subset_blastdb_by_accession.R` (R version) or `subset_blastdb_by_accession.sh`
+1. Checks that the source BLAST database can be opened, so a missing drive or broken
+   database is caught before any downloading.
+2. Searches NCBI nuccore once (E-utilities `esearch`, via `curl`) and keeps the search
+   session for paging.
+3. Downloads the matching accessions in chunks of 5,000 (`efetch`, `rettype=acc`). Each
+   request overlaps the next chunk by 10 records (duplicates are removed afterwards), and
+   requests are kept under NCBI's limit of 9,999 records per request.
+   NCBI often returns transient errors such as `HTTP 502 Bad Gateway` on large
+   downloads, so each chunk:
+   - is checked for completeness: every line must look like an accession (including
+     PDB-style ones such as `9SL3_A`), and the count must match the request. NCBI's
+     search count includes a few records the download never returns (e.g. suppressed
+     ones), so a chunk that comes back short by the *same* amount twice in a row is
+     accepted; a truncated transfer gives a different count each time and is retried;
+   - is retried up to 8 times, waiting 5, 10, 20, 40 ... seconds (max 5 min) between tries;
+   - after every 3rd failure, starts a fresh NCBI search session in case the old one expired.
+
+   If a chunk still fails, the script stops but keeps the finished chunks. Re-running
+   the same command resumes from where it stopped, as long as the search still returns
+   the same number of records. Duplicate accessions are dropped, and you get a warning
+   if the final count differs from NCBI's total (records changed during the download).
+4. Saves the combined accession list to `<output_dir>/accessions/<taxon>_ncbi_acc.txt`.
+5. Records the search query, date and record count, and calls `subset_blastdb_by_accession.R` (R version) or `subset_blastdb_by_accession.sh`
    (bash version) to extract sequences from the local database and build the standalone
    BLAST database.
+
+**Optional settings** (environment variables, e.g. in `~/.bashrc`):
+
+| Variable | Default | Effect |
+|---|---|---|
+| `NCBI_EMAIL` | none | Your email address, sent with each request (NCBI asks E-utilities users to identify themselves). |
+| `NCBI_API_KEY` | none | Your NCBI API key (free, from your NCBI account settings). Allows 10 instead of 3 requests/second and is recommended for large downloads. |
+| `NCBI_CHUNK_SIZE` | 5000 | Accessions per request (capped at 9,989, since NCBI returns at most 9,999 per request). Lower it if large chunks keep failing. |
+| `NCBI_MAX_TRIES` | 8 | Attempts per request before giving up. |
+| `NCBI_RETRY_WAIT` | 5 | Seconds before the first retry; doubles on each retry. |
 
 **Requirements:** see Dependencies below.
 
@@ -95,8 +138,10 @@ Rscript subset_blastdb_by_accession.R <blastdb> <acc_list> [output_dir] [title]
    `code/`, and writes `readme.txt`.
 8. Removes the intermediate FASTA file.
 
-Accessions not present in the local database are silently skipped by `blastdbcmd`
-(this is expected when the local database snapshot is older than the NCBI query).
+Accessions not present in the local database are skipped. This is expected when the local
+database snapshot is older than the NCBI query, or when the query matches records that
+`core_nt` leaves out. They are listed in `<taxon>_not_in_source_db.txt`, and the count is
+recorded in `readme.txt`.
 
 **Output files** (all prefixed with the output directory name):
 
@@ -111,6 +156,7 @@ Accessions not present in the local database are silently skipped by `blastdbcmd
     input_accessions.txt   copy of the accession list, only if it lived outside <output_dir>
   <taxon>_taxids.txt       raw accession-taxid pairs from blastdbcmd
   <taxon>_taxid_map.txt    deduplicated map used by makeblastdb
+  <taxon>_not_in_source_db.txt   accessions in the list but not in the source db (if any)
   <taxon>.{nhr,nin,...}    BLAST database files
 ```
 
@@ -205,13 +251,13 @@ Balaenoptera/
 | **R** (≥ 4.0) | `.R` scripts only | base R only; no packages required — not needed if using `.sh` versions |
 | **bash** (≥ 4.0), **awk**, **grep** | `.sh` scripts | standard on macOS/Linux; macOS ships bash 3.2 — install bash 4+ via Homebrew if needed |
 | **NCBI BLAST+** (`blastdbcmd`, `makeblastdb`) | all scripts | must be on `PATH`; tested with BLAST+ 2.14+ |
-| **NCBI edirect** (`esearch`, `efetch`) | `make_subset_blastdb.*` | expected at `~/edirect`; install with `sh <(curl -fsSL https://ftp.ncbi.nlm.nih.gov/entrez/entrezdirect/install-edirect.sh)` |
+| **curl** | `make_subset_blastdb.*` | standard on macOS/Linux; used to query NCBI E-utilities (NCBI edirect is no longer needed) |
 | **NCBI taxonomy files** (`taxdb.btd`, `taxdb.bti`) | `subset_blastdb_by_accession.*` | must be in the source database's folder or on the `BLASTDB` path (the scripts run `blastdbcmd` from inside the source database's folder, so taxdb files kept next to `core_nt` are found automatically) |
 
 **PATH under RStudio:** RStudio (its Terminal and R's `system()` calls) does not inherit
-the `PATH` from the macOS Terminal app, so `blastdbcmd`, `esearch`, etc. may be "not found".
+the `PATH` from the macOS Terminal app, so `blastdbcmd`, `makeblastdb`, etc. may be "not found".
 Every script therefore loads `~/.bashrc` first and uses the `PATH` it sets. Put the lines
-that add BLAST+ and edirect to your `PATH` in `~/.bashrc`, not inside an "interactive only"
+that add BLAST+ to your `PATH` (and any `export NCBI_API_KEY=...`) in `~/.bashrc`, not inside an "interactive only"
 block, and not only in `~/.zshrc` or `~/.bash_profile`.
 
 **Note:** `BLAST Database error: Database memory map file error` (exit code 3) from

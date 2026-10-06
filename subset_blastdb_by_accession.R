@@ -26,14 +26,23 @@
 # record count (passed via SUBSET_SEARCH_* env vars) are recorded as well,
 # and the wrapper script is copied into code/ too.
 
-# ---- load the user's shell PATH from ~/.bashrc ----
-# RStudio (including its Terminal and R's system() calls) does not inherit the PATH
-# set up for the macOS Terminal app, so BLAST+ and edirect may not be found. Source
-# ~/.bashrc in bash and use the resulting PATH for every command this script runs.
+# ---- load the user's shell settings from ~/.bashrc ----
+# RStudio (including its Terminal and R's system() calls) does not inherit the settings
+# made for the macOS Terminal app, so BLAST+ may not be found and NCBI settings are
+# missing. Source ~/.bashrc in bash and adopt its PATH, BLASTDB and NCBI_* variables
+# for everything this script runs (variables already set in R are kept).
+bashrc_loaded <- FALSE
 if (file.exists(path.expand("~/.bashrc"))) {
-  bashrc_path <- suppressWarnings(system(
-    "bash -c 'source ~/.bashrc >/dev/null 2>&1; printf %s \"$PATH\"'", intern = TRUE))
-  if (length(bashrc_path) == 1 && nzchar(bashrc_path)) Sys.setenv(PATH = bashrc_path)
+  bashrc_vars <- c("PATH", "BLASTDB", "NCBI_EMAIL", "NCBI_API_KEY",
+                   "NCBI_CHUNK_SIZE", "NCBI_MAX_TRIES", "NCBI_RETRY_WAIT")
+  bashrc_env <- suppressWarnings(system(paste0(
+    "bash -c 'source ~/.bashrc >/dev/null 2>&1; for v in ", paste(bashrc_vars, collapse = " "),
+    "; do printf \"%s=%s\\n\" \"$v\" \"${!v}\"; done'"), intern = TRUE))
+  for (kv in bashrc_env) {
+    k <- sub("=.*", "", kv); v <- sub("^[^=]*=", "", kv)
+    if (nzchar(v) && (k == "PATH" || !nzchar(Sys.getenv(k)))) do.call(Sys.setenv, setNames(list(v), k))
+  }
+  bashrc_loaded <- length(bashrc_env) > 0
 }
 
 # ---- parse args ----
@@ -80,6 +89,8 @@ out_abs <- normalizePath(out_dir)   # absolute path; used for all intermediate f
 # and makeblastdb. Workaround: run each BLAST command from inside the database's
 # own folder and refer to the database by its bare (space-free) name.
 in_dir  <- function(dir, cmd) paste("cd", shQuote(dir), "&&", cmd)
+if (!dir.exists(dirname(db_path)))
+  stop("Source database folder not found: ", dirname(db_path), " (is the drive mounted?)", call. = FALSE)
 db_dir  <- normalizePath(dirname(db_path), mustWork = TRUE)
 db_name <- basename(db_path)
 if (grepl("[[:space:]]", db_name))
@@ -107,6 +118,32 @@ if (any(gi_like)) {
 }
 message(sprintf("Input: %d accession(s) from %s", length(acc_lines), acc_file))
 
+# Explain why a BLAST database could not be opened (shown with the error)
+db_diagnostics <- function(db_dir, db_name) {
+  bin <- Sys.which("blastdbcmd")
+  ver <- tryCatch(suppressWarnings(system("blastdbcmd -version 2>&1", intern = TRUE))[1],
+                  error = function(e) "?")
+  out <- c("  Diagnostics:",
+           sprintf("    blastdbcmd used : %s (%s)", if (nzchar(bin)) bin else "NOT FOUND", ver))
+  ls_out <- suppressWarnings(system(paste("ls", shQuote(db_dir), "2>&1"), intern = TRUE))
+  if (!is.null(attr(ls_out, "status")) && attr(ls_out, "status") != 0) {
+    out <- c(out, paste0("    cannot list ", db_dir, ": ", ls_out[1]),
+      "    If that says 'Operation not permitted', macOS is blocking this app from the drive:",
+      "    allow RStudio (and/or Terminal) under System Settings > Privacy & Security >",
+      "    Files and Folders (Removable Volumes), or Full Disk Access, then restart RStudio.")
+  } else {
+    idx <- grep(paste0("^", gsub(".", "\\.", db_name, fixed = TRUE),
+                       "(\\.[0-9]+)?\\.(nal|nin|ndb)$"), ls_out, value = TRUE)
+    out <- c(out, sprintf("    '%s' index files in %s: %s", db_name, db_dir,
+                          if (length(idx)) paste(head(idx, 4), collapse = " ") else "NONE"),
+      if (!length(idx)) c(sprintf("    The folder holds %d items, e.g.: %s", length(ls_out),
+                                  paste(head(ls_out, 4), collapse = " ")),
+                          "    Check the database name in the path.")
+      else "    The files are there, so the BLAST+ version above may be too old for this database.")
+  }
+  paste(out, collapse = "\n")
+}
+
 # ---- check the source database can be opened before doing any work ----
 db_info <- suppressWarnings(
   system(in_dir(db_dir, paste("blastdbcmd -db", shQuote(db_name), "-info 2>&1")), intern = TRUE))
@@ -114,8 +151,10 @@ if (!is.null(attr(db_info, "status")) && attr(db_info, "status") != 0) {
   # remove the output dir only if it is empty (i.e. we just created it)
   if (length(list.files(out_abs, all.files = TRUE, no.. = TRUE)) == 0) unlink(out_abs, recursive = TRUE)
   stop("Cannot open the source BLAST database: ", db_path, "\n  blastdbcmd said: ",
-       paste(head(db_info, 3), collapse = "\n    "),
-       "\n  Common causes: the drive holding the database is reached over a network share\n  (SMB/NFS -- BLAST's LMDB index needs a locally attached disk), the download of the\n  database is incomplete, or the path is wrong.", call. = FALSE)
+       paste(head(db_info, 3), collapse = "\n    "), "\n",
+       db_diagnostics(db_dir, db_name),
+       "\n  (An LMDB / mdb_env_open error usually means the drive is network-mounted or the",
+       "\n   database download is incomplete.)", call. = FALSE)
 }
 message("Source database opened OK: ", db_path)
 
@@ -149,13 +188,29 @@ invisible(parallel::mclapply(seq_len(n_chunks), function(i) {
     " -db ", shQuote(db_name),
     " -entry_batch ", shQuote(acc_chunk_files[[i]]),
     ' -outfmt ">%a %t\n%s"',
-    " -out ", shQuote(fasta_chunk_files[[i]])
+    " -out ", shQuote(fasta_chunk_files[[i]]),
+    " 2> ", shQuote(paste0(fasta_chunk_files[[i]], ".err"))
   ))
   system(cmd)
 }, mc.cores = n_chunks))
 system(paste("cat", paste(shQuote(unlist(fasta_chunk_files)), collapse = " "),
              ">", shQuote(fasta_file)))
-invisible(file.remove(unlist(fasta_chunk_files)))
+# blastdbcmd reports each accession missing from the source db as "Skipped <acc>";
+# collect those in a file instead of printing thousands of lines
+err_lines <- unlist(lapply(paste0(unlist(fasta_chunk_files), ".err"), function(f)
+  if (file.exists(f)) readLines(f, warn = FALSE) else character(0)))
+not_found <- sub(".*Skipped[[:space:]]*", "", grep("Skipped", err_lines, value = TRUE))
+other_errs <- grep("Skipped|Entry or entries not found", err_lines, value = TRUE, invert = TRUE)
+other_errs <- other_errs[nzchar(trimws(other_errs))]
+if (length(other_errs)) message("  blastdbcmd messages:\n", paste(head(other_errs, 5), collapse = "\n"))
+not_found_file <- file.path(out_abs, paste0(prefix, "_not_in_source_db.txt"))
+n_not_found <- length(not_found)
+if (n_not_found > 0) {
+  writeLines(not_found, not_found_file)
+  message(sprintf("  %d accession(s) not in the source database (listed in %s)",
+                  n_not_found, basename(not_found_file)))
+}
+invisible(file.remove(c(unlist(fasta_chunk_files), paste0(unlist(fasta_chunk_files), ".err"))))
 if (!file.exists(fasta_file) || file.size(fasta_file) == 0) {
   invisible(file.remove(c(fasta_file, unlist(acc_chunk_files))))
   stop("blastdbcmd (fasta) produced no output: none of the accessions were found in ", db_path)
@@ -173,7 +228,8 @@ invisible(parallel::mclapply(seq_len(n_chunks), function(i) {
     " -db ", shQuote(db_name),
     " -entry_batch ", shQuote(acc_chunk_files[[i]]),
     ' -outfmt "%a\t%T"',
-    " -out ", shQuote(taxid_chunk_files[[i]])
+    " -out ", shQuote(taxid_chunk_files[[i]]),
+    " 2> /dev/null"
   ))
   system(cmd)
 }, mc.cores = n_chunks))
@@ -282,6 +338,9 @@ writeLines(c(
           prefix, format(Sys.Date(), "%Y-%m-%d"), run_user),
   sprintf("Contents: %d unique accessions, %d unique NCBI taxon IDs,", n_seqs, n_taxids),
   sprintf("  from the accession list %s.", acc_rel),
+  if (n_not_found > 0)
+    sprintf("  %d listed accessions were not in the source database: %s.",
+            n_not_found, basename(not_found_file)),
   if (nzchar(Sys.getenv("SUBSET_SEARCH_QUERY"))) c(
     sprintf("Search: NCBI nuccore, run %s, %s records matched:",
             Sys.getenv("SUBSET_SEARCH_DATE", "unknown date"),
